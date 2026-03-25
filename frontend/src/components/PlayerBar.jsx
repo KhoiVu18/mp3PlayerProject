@@ -1,5 +1,6 @@
 import React, { useContext, useState } from 'react';
 import { PlayerContext } from '../context/PlayerContext';
+import SleepTimerModal from './SleepTimerModal';
 
 
 function formatTime(seconds) {
@@ -70,6 +71,7 @@ export default function PlayerBar() {
             title={isShuffled ? 'Shuffle on' : 'Shuffle off'}
           >
             <ShuffleIcon />
+            
           </button>
           <button type="button" className="w-10 h-10 flex items-center justify-center text-text-muted rounded-app-sm hover:bg-bg-hover hover:text-[#e8eaed] transition-colors duration-150" onClick={previous} title="Previous">
             <PreviousIcon />
@@ -85,6 +87,7 @@ export default function PlayerBar() {
           <button type="button" className="w-10 h-10 flex items-center justify-center text-text-muted rounded-app-sm hover:bg-bg-hover hover:text-[#e8eaed] transition-colors duration-150" onClick={next} title="Next">
             <NextIcon />
           </button>
+          <SleepTimerModal />
           <button
             type="button"
             className={`w-10 h-10 flex items-center justify-center rounded-app-sm transition-colors duration-150 relative ${
