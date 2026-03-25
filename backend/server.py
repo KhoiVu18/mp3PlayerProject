@@ -6,17 +6,6 @@ import shutil
 
 app = Flask(__name__)
 CORS(app)
-
-# ---------------------------------------------------------------------------
-# UNICODE / UTF-8 FILENAME FIX
-# On Windows, os.listdir() returns filenames in the OS locale encoding
-# (often cp1252) rather than UTF-8.  We force Python's filesystem encoding
-# to UTF-8 so Vietnamese / accented characters round-trip correctly.
-# Also, Werkzeug (Flask's URL layer) sometimes delivers percent-encoded
-# path segments already decoded, but with the wrong encoding on Windows.
-# The helper below ensures every filename we receive from a URL is properly
-# decoded as UTF-8 before we hit the filesystem.
-# ---------------------------------------------------------------------------
 import sys, io
 if sys.platform == 'win32':
     # Reconfigure stdout/stderr so Flask's debug logger doesn't choke on Unicode
@@ -24,12 +13,6 @@ if sys.platform == 'win32':
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 def decode_filename(raw: str) -> str:
-    """
-    Percent-decode a filename coming from a URL path segment.
-    Werkzeug already decodes %XX sequences for us, but on Windows the result
-    can be a Latin-1 mis-decoded UTF-8 string. We re-encode to Latin-1 then
-    decode as UTF-8 to recover the original Unicode codepoints.
-    """
     try:
         return raw.encode('latin-1').decode('utf-8')
     except (UnicodeEncodeError, UnicodeDecodeError):
@@ -45,11 +28,6 @@ for path in [MUSIC_FOLDER, PLAYLIST_BASE_DIR]:
         os.makedirs(path)
 
 
-# --- 2. LIBRARY FILE SERVER ---
-# FIX: Added `path:` converter so filenames with spaces, dots, and special
-# characters (e.g. "Born To Die_spotdown.org.mp3") are passed through intact
-# after the browser percent-encodes them (%20 etc.). Without `path:`, Flask's
-# default string converter stops at the first dot and raises a 404.
 @app.route('/library/Music/normal_music/<path:filename>')
 def serve_library_music(filename):
     directory = os.path.abspath(os.path.join('library', 'Music', 'normal_music'))
