@@ -3,49 +3,50 @@ import React, { createContext, useContext, useRef, useState, useCallback, useEff
 export const PlayerContext = createContext(null);
 
 const STORAGE_KEYS = {
-  favorites: 'mp3-player-favorites',
+  favorites:   'mp3-player-favorites',
+  sleepTimer:  'mp3-player-sleep-timer', // persists the configured time across reloads
 };
 
 export function PlayerProvider({ children }) {
-  const [playlists, setPlaylists] = useState([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [library, setLibrary] = useState([]);
-  const [favorites, setFavorites] = useState(() => {
+  const [playlists, setPlaylists]       = useState([]);
+  const [searchQuery, setSearchQuery]   = useState('');
+  const [library, setLibrary]           = useState([]);
+  const [favorites, setFavorites]       = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.favorites);
     return saved ? JSON.parse(saved) : [];
   });
-  const [isListening, setIsListening] = useState(false);
-  const [isShuffled, setIsShuffled] = useState(false);
-  const [isRepeating, setIsRepeating] = useState(false);
+  const [isListening, setIsListening]   = useState(false);
+  const [isShuffled, setIsShuffled]     = useState(false);
+  const [isRepeating, setIsRepeating]   = useState(false);
   const [currentTrack, setCurrentTrack] = useState(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(0.7);
-  const [playbackRate, setRate] = useState(1);
-  const [speed, setSpeed] = useState(1);  // FIX: kept only one definition (was duplicated below)
+  const [isPlaying, setIsPlaying]       = useState(false);
+  const [currentTime, setCurrentTime]   = useState(0);
+  const [duration, setDuration]         = useState(0);
+  const [volume, setVolume]             = useState(0.7);
+  const [playbackRate, setRate]         = useState(1);
+  const [speed, setSpeed]               = useState(1);
 
-  const audioRef = useRef(null);
+  const [sleepTime, setSleepTime]     = useState(
+    () => localStorage.getItem(STORAGE_KEYS.sleepTimer) || ''
+  );
+  const [sleepActive, setSleepActive] = useState(false);
+  const [sleepAlert, setSleepAlert]   = useState(false);
 
-  // Shuffle queue — holds a pre-randomised copy of the library indices.
-  // We pop from the end so every track plays exactly once before reshuffling.
+  const audioRef        = useRef(null);
   const shuffleQueueRef = useRef([]);
+  const sleepTimerRef   = useRef(null); // holds the setInterval ID
 
-  const filteredLibrary = library.filter(track =>
-    track.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    track.artist.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredLibrary = library.filter(t =>
+    t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    t.artist.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // --- Fetch Library from Flask Backend ---
-  // FIX: Removed the duplicate bare `fetch` useEffect that ran alongside fetchLibrary.
-  // Only one fetch path is needed — the one inside fetchLibrary below.
+  // --- Fetch library from Flask ---
   const fetchLibrary = useCallback(async () => {
     try {
       const response = await fetch('http://127.0.0.1:5000/api/library');
       const data = await response.json();
-
       const updatedTracks = data.map(track => {
-        // External tracks have id like "ext0::filename.mp3"
         const isExternal = track.id.startsWith('ext');
         let url;
         if (isExternal) {
@@ -53,19 +54,13 @@ export function PlayerProvider({ children }) {
           const folderIdx = prefix.replace('ext', '');
           url = `http://127.0.0.1:5000/external/${folderIdx}/${encodeURIComponent(fileName)}`;
         } else {
-          // Primary library — encodeURIComponent handles spaces + Vietnamese chars
           url = `http://127.0.0.1:5000/library/Music/normal_music/${encodeURIComponent(track.id)}`;
         }
-        return {
-          ...track,
-          url,
-          fileName: track.fileName || track.id,
-        };
+        return { ...track, url, fileName: track.fileName || track.id };
       });
-
       setLibrary(updatedTracks);
     } catch (error) {
-      console.error("Error fetching library:", error);
+      console.error('Error fetching library:', error);
     }
   }, []);
 
@@ -75,94 +70,78 @@ export function PlayerProvider({ children }) {
       const data = await response.json();
       setPlaylists(data);
     } catch (err) {
-      console.error("Error updating playlists:", err);
+      console.error('Error fetching playlists:', err);
     }
   }, []);
 
-  // Single bootstrap effect — fetches library + playlists once on mount
   useEffect(() => {
     fetchLibrary();
     fetchPlaylists();
   }, [fetchLibrary, fetchPlaylists]);
 
-  // --- Persist Favorites ---
+  // --- Persist favorites ---
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(favorites));
   }, [favorites]);
 
-  // --- Sync audio volume whenever state changes ---
+  // --- Persist configured sleep time ---
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
-    }
-  }, [volume]);
+    if (sleepTime) localStorage.setItem(STORAGE_KEYS.sleepTimer, sleepTime);
+    else           localStorage.removeItem(STORAGE_KEYS.sleepTimer);
+  }, [sleepTime]);
 
-  // --- Sync playback rate whenever state changes ---
-  // FIX: Merged two separate (conflicting) playbackRate effects into one.
+  // --- Audio sync ---
+  useEffect(() => { if (audioRef.current) audioRef.current.volume = volume; }, [volume]);
+  useEffect(() => { if (audioRef.current) audioRef.current.playbackRate = playbackRate; }, [playbackRate]);
+  useEffect(() => { if (audioRef.current) audioRef.current.playbackRate = speed; }, [speed]);
+
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.playbackRate = playbackRate;
-    }
-  }, [playbackRate]);
-
-  // --- Sync speed (separate state used by some UI controls) ---
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.playbackRate = speed;
-    }
-  }, [speed]);
-
-  // --- Load & play whenever currentTrack changes ---
-  useEffect(() => {
-    if (currentTrack && audioRef.current) {
-      audioRef.current.src = currentTrack.url;
-      audioRef.current.volume = volume;
-      audioRef.current.playbackRate = playbackRate;
-
-      if (isPlaying) {
-        audioRef.current.play().catch(() => {
-          console.log("Playback interaction handled");
-        });
-      }
-    }
-    // FIX: isPlaying intentionally omitted from deps — we only re-load on track change,
-    // not every time pause/play toggles (that is handled by togglePlay).
+    if (!currentTrack || !audioRef.current) return;
+    audioRef.current.src = currentTrack.url;
+    audioRef.current.volume = volume;
+    audioRef.current.playbackRate = playbackRate;
+    if (isPlaying) audioRef.current.play().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTrack]);
 
-  // --- Playback Controls ---
-  const playTrack = useCallback((track) => {
-    if (!track) return;
-    setCurrentTrack(track);
-    setIsPlaying(true);
+  const triggerSleep = useCallback(() => {
+    if (audioRef.current) audioRef.current.pause();
+    setIsPlaying(false);
+    setSleepActive(false);
+    setSleepAlert(true);
+    clearInterval(sleepTimerRef.current);
+    sleepTimerRef.current = null;
   }, []);
 
-  const togglePlay = useCallback(() => {
-    if (!audioRef.current) return;
-    if (isPlaying) {
-      audioRef.current.pause();
-    } else {
-      audioRef.current.play();
-    }
-    setIsPlaying(prev => !prev);
-  }, [isPlaying]);
+  const startSleepTimer = useCallback((time) => {
+    
+    if (sleepTimerRef.current) clearInterval(sleepTimerRef.current);
 
-  // FIX: `previous` was crashing when currentTrack was null (no null guard)
-  const previous = useCallback(() => {
-    if (!currentTrack || library.length === 0) return;
-    const currentIndex = library.findIndex(t => t.id === currentTrack.id);
-    if (currentIndex > 0) {
-      setCurrentTrack(library[currentIndex - 1]);
-    }
-  }, [currentTrack, library]);
+    setSleepActive(true);
 
-  // Build a new Fisher-Yates shuffled index queue, excluding the current track
-  // so it doesn't play again immediately after toggling shuffle on.
+    sleepTimerRef.current = setInterval(() => {
+      const now  = new Date();
+      const hhmm = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+      if (hhmm === time) triggerSleep();
+    }, 10_000);
+  }, [triggerSleep]);
+
+  const cancelSleepTimer = useCallback(() => {
+    clearInterval(sleepTimerRef.current);
+    sleepTimerRef.current = null;
+    setSleepActive(false);
+  }, []);
+
+
+  useEffect(() => () => clearInterval(sleepTimerRef.current), []);
+
+ 
+  useEffect(() => {
+    if (sleepTime) startSleepTimer(sleepTime);
+  
+  }, []); 
   const buildShuffleQueue = useCallback((trackList, currentId) => {
-    const indices = trackList
-      .map((_, i) => i)
-      .filter(i => trackList[i].id !== currentId);
-    // Fisher-Yates shuffle
+    const indices = trackList.map((_, i) => i).filter(i => trackList[i].id !== currentId);
     for (let i = indices.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [indices[i], indices[j]] = [indices[j], indices[i]];
@@ -172,49 +151,47 @@ export function PlayerProvider({ children }) {
 
   const toggleShuffle = useCallback(() => {
     setIsShuffled(prev => {
-      const turningOn = !prev;
-      if (turningOn) {
-        // Pre-build the queue right away so the very next "next()" call uses it
-        buildShuffleQueue(library, currentTrack?.id);
-      } else {
-        shuffleQueueRef.current = [];
-      }
-      return turningOn;
+      if (!prev) buildShuffleQueue(library, currentTrack?.id);
+      else shuffleQueueRef.current = [];
+      return !prev;
     });
   }, [library, currentTrack, buildShuffleQueue]);
 
-  const next = useCallback(() => {
-    if (library.length === 0) return;
+  // ---------------------------------------------------------------------------
+  // PLAYBACK
+  // ---------------------------------------------------------------------------
+  const playTrack = useCallback((track) => {
+    if (!track) return;
+    setCurrentTrack(track);
+    setIsPlaying(true);
+  }, []);
 
-    if (isShuffled) {
-      // If the queue is empty, rebuild it (all songs played — start a new round)
-      if (shuffleQueueRef.current.length === 0) {
-        buildShuffleQueue(library, currentTrack?.id);
-      }
-      // Pop the next index from the end of the queue
-      const nextIndex = shuffleQueueRef.current.pop();
-      setCurrentTrack(library[nextIndex]);
-    } else {
-      const currentIndex = library.findIndex(t => t.id === currentTrack?.id);
-      const nextIndex = (currentIndex + 1) % library.length;
-      setCurrentTrack(library[nextIndex]);
-    }
-  }, [currentTrack, library, isShuffled, buildShuffleQueue]);
+  const togglePlay = useCallback(() => {
+    if (!audioRef.current) return;
+    isPlaying ? audioRef.current.pause() : audioRef.current.play();
+    setIsPlaying(p => !p);
+  }, [isPlaying]);
 
   const seek = useCallback((value) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = value;
-      setCurrentTime(value);
-    }
+    if (audioRef.current) { audioRef.current.currentTime = value; setCurrentTime(value); }
   }, []);
 
-  // FIX: handleSeek was calling setTrackProgress which was never defined — replaced with setCurrentTime
-  const handleSeek = useCallback((newTime) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = newTime;
-      setCurrentTime(newTime);
+  const previous = useCallback(() => {
+    if (!currentTrack || library.length === 0) return;
+    const idx = library.findIndex(t => t.id === currentTrack.id);
+    if (idx > 0) setCurrentTrack(library[idx - 1]);
+  }, [currentTrack, library]);
+
+  const next = useCallback(() => {
+    if (library.length === 0) return;
+    if (isShuffled) {
+      if (shuffleQueueRef.current.length === 0) buildShuffleQueue(library, currentTrack?.id);
+      setCurrentTrack(library[shuffleQueueRef.current.pop()]);
+    } else {
+      const idx = library.findIndex(t => t.id === currentTrack?.id);
+      setCurrentTrack(library[(idx + 1) % library.length]);
     }
-  }, []);
+  }, [currentTrack, library, isShuffled, buildShuffleQueue]);
 
   const handleTrackEnd = useCallback(() => {
     if (isRepeating === 'one') {
@@ -223,135 +200,90 @@ export function PlayerProvider({ children }) {
     } else if (isRepeating === 'all') {
       next();
     } else {
-      const currentIndex = library.findIndex(t => t.id === currentTrack?.id);
-      if (currentIndex < library.length - 1) {
-        next();
-      } else {
-        setIsPlaying(false);
-      }
+      const idx = library.findIndex(t => t.id === currentTrack?.id);
+      if (idx < library.length - 1) next();
+      else setIsPlaying(false);
     }
   }, [isRepeating, currentTrack, library, next]);
 
-  // --- Playlist Controls ---
+  const playQueue = useCallback((tracks, index) => {
+    if (tracks[index]) playTrack(tracks[index]);
+  }, [playTrack]);
+
+  // ---------------------------------------------------------------------------
+  // PLAYLISTS
+  // ---------------------------------------------------------------------------
   const createPlaylist = useCallback(async (name) => {
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/playlists', {
+      const res  = await fetch('http://127.0.0.1:5000/api/playlists', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name }),
       });
-      const data = await response.json();
+      const data = await res.json();
       setPlaylists(prev => [...prev, data]);
       return data.id;
-    } catch (err) {
-      console.error("Failed to create playlist folder:", err);
-    }
+    } catch (err) { console.error('Create playlist error:', err); }
   }, []);
 
   const addSongToPlaylist = useCallback(async (songFilename, playlistName) => {
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/playlists/add-song', {
+      const res = await fetch('http://127.0.0.1:5000/api/playlists/add-song', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          song_filename: songFilename,
-          playlist_name: playlistName,
-        }),
+        body: JSON.stringify({ song_filename: songFilename, playlist_name: playlistName }),
       });
-      if (response.ok) {
-        alert(`Success! ${songFilename} added to ${playlistName}`);
-        fetchPlaylists();
-      }
-    } catch (err) {
-      console.error("Fetch error:", err);
-    }
+      if (res.ok) { alert(`Added to ${playlistName}`); fetchPlaylists(); }
+    } catch (err) { console.error('Add song error:', err); }
   }, [fetchPlaylists]);
 
-  // FIX: removeFromPlaylist was used in PlaylistView but was never defined here
   const removeFromPlaylist = useCallback(async (playlistId, fileName) => {
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/playlists/remove-song', {
+      const res = await fetch('http://127.0.0.1:5000/api/playlists/remove-song', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ playlist_name: playlistId, song_filename: fileName }),
       });
-      if (response.ok) {
-        fetchPlaylists();
-      }
-    } catch (err) {
-      console.error("Remove from playlist error:", err);
-    }
+      if (res.ok) fetchPlaylists();
+    } catch (err) { console.error('Remove song error:', err); }
   }, [fetchPlaylists]);
 
-  const playQueue = useCallback((tracks, index) => {
-    const track = tracks[index];
-    if (track) {
-      playTrack(track);
-    }
-  }, [playTrack]);
+  // ---------------------------------------------------------------------------
+  // FAVORITES
+  // ---------------------------------------------------------------------------
+  const toggleFavorite = useCallback((id) =>
+    setFavorites(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
+  , []);
+  const isFavorite = useCallback((id) => favorites.includes(id), [favorites]);
 
-  const playNextTrack = useCallback(() => {
-    next();
-  }, [next]);
-
-  const toggleFavorite = useCallback((trackId) => {
-    setFavorites(prev =>
-      prev.includes(trackId) ? prev.filter(id => id !== trackId) : [...prev, trackId]
-    );
-  }, []);
-
-  const isFavorite = useCallback((trackId) => favorites.includes(trackId), [favorites]);
-
-  // FIX: Removed stale `contextValue` object defined mid-file that shadowed real values.
-  // Everything is consolidated into the single `value` object below.
+  // ---------------------------------------------------------------------------
+  // CONTEXT VALUE
+  // ---------------------------------------------------------------------------
   const value = {
-    audioRef,
-    library,
-    filteredLibrary,
-    favorites,
-    playlists,
-    currentTrack,
-    isPlaying,
-    currentTime,
-    duration,
-    volume,
-    playbackRate,
-    speed,
-    isRepeating,
-    isShuffled,
-    searchQuery,
-    isListening,
+    audioRef, library, filteredLibrary, favorites, playlists,
+    currentTrack, isPlaying, currentTime, duration,
+    volume, playbackRate, speed,
+    isRepeating, isShuffled, searchQuery, isListening,
 
-    setVolume,
-    setRate,
-    setSpeed,
-    setCurrentTime,
-    setDuration,
-    setIsPlaying,
-    setPlaylists,
-    setIsRepeating,
-    setIsShuffled,
-    toggleShuffle,
-    setSearchQuery,
-    setIsListening,
+    // Sleep timer
+    sleepTime, setSleepTime,
+    sleepActive, sleepAlert, setSleepAlert,
+    startSleepTimer, cancelSleepTimer,
 
-    togglePlay,
-    playTrack,
-    playQueue,
-    playFromLibrary: (track) => playTrack(track),
-    playNextTrack,
-    previous,
-    next,
-    seek,
-    handleSeek,
+    setVolume, setRate, setSpeed, setCurrentTime, setDuration,
+    setIsPlaying, setPlaylists, setIsRepeating, setIsShuffled,
+    setSearchQuery, setIsListening,
+
+    togglePlay, playTrack, playQueue,
+    playFromLibrary: playTrack,
+    playNextTrack: next,
+    previous, next, seek,
+    handleSeek: seek,
     handleTrackEnd,
-    isFavorite,
-    toggleFavorite,
-    fetchLibrary,
-    fetchPlaylists,
-    createPlaylist,
-    addSongToPlaylist,
-    removeFromPlaylist,
+    toggleShuffle,
+    isFavorite, toggleFavorite,
+    fetchLibrary, fetchPlaylists,
+    createPlaylist, addSongToPlaylist, removeFromPlaylist,
 
     getTrackById: (id) =>
       library.find(t => t.id === id || t.fileName === id || t.id === String(id)),
